@@ -66,7 +66,7 @@ The user runs a single Docker command (or a provided start script). A browser op
 - **Backend**: FastAPI (Python), managed as a `uv` project
 - **Database**: SQLite, single file at `db/finally.db`, volume-mounted for persistence
 - **Real-time data**: Server-Sent Events (SSE) — simpler than WebSockets, one-way server→client push, works everywhere
-- **AI integration**: LiteLLM → OpenRouter (Cerebras for fast inference), with structured outputs for trade execution
+- **AI integration**: Ollama running locally as a service in the stack, with structured outputs for trade execution
 - **Market data**: Environment-variable driven — simulator by default, real data via Massive API if key provided
 
 ### Why These Choices
@@ -121,8 +121,12 @@ finally/
 ## 5. Environment Variables
 
 ```bash
-# Required: OpenRouter API key for LLM chat functionality
-OPENROUTER_API_KEY=your-openrouter-api-key-here
+# Optional: Ollama address. Defaults to the compose service name; set to
+# http://localhost:11434 when running the backend directly with uv run
+OLLAMA_URL=http://ollama:11434
+
+# Optional: the local model used for chat
+OLLAMA_MODEL=qwen2.5:1.5b
 
 # Optional: Massive (Polygon.io) API key for real market data
 # If not set, the built-in market simulator is used (recommended for most users)
@@ -131,6 +135,9 @@ MASSIVE_API_KEY=
 # Optional: Set to "true" for deterministic mock LLM responses (testing)
 LLM_MOCK=false
 ```
+
+No API key is required. The LLM runs locally in Ollama, brought up as part of
+the stack by `scripts/start_mac.sh`.
 
 ### Behavior
 
@@ -281,9 +288,12 @@ All tables include a `user_id` column defaulting to `"default"`. This is hardcod
 
 ## 9. LLM Integration
 
-When writing code to make calls to LLMs, use cerebras-inference skill to use LiteLLM via OpenRouter to the `openrouter/openai/gpt-oss-120b` model with Cerebras as the inference provider. Structured Outputs should be used to interpret the results.
+When writing code to make calls to LLMs, use the `ollama-local` skill: HTTP to a
+local Ollama instance running as a service in the stack, using its `format`
+parameter for structured outputs. No API key and no network egress.
 
-There is an OPENROUTER_API_KEY in the .env file in the project root.
+The model is `qwen2.5:1.5b` — about 1GB, answering in well under two seconds on
+CPU. It is small, and the schema below is shaped around that fact.
 
 ### How It Works
 
@@ -292,31 +302,42 @@ When the user sends a chat message, the backend:
 1. Loads the user's current portfolio context (cash, positions with P&L, watchlist with live prices, total portfolio value)
 2. Loads recent conversation history from the `chat_messages` table
 3. Constructs a prompt with a system message, portfolio context, conversation history, and the user's new message
-4. Calls the LLM via LiteLLM → OpenRouter, requesting structured output, using the cerebras-inference skill
-5. Parses the complete structured JSON response
-6. Auto-executes any trades or watchlist changes specified in the response
+4. Calls Ollama's `/api/chat` with `format` set to the schema below, `stream: false`, and `temperature: 0`, per the `ollama-local` skill
+5. Parses the structured JSON response, tolerating truncated output
+6. Validates the proposed action against real state, then auto-executes it
 7. Stores the message and executed actions in `chat_messages`
-8. Returns the complete JSON response to the frontend (no token-by-token streaming — Cerebras inference is fast enough that a loading indicator is sufficient)
+8. Returns the complete JSON response to the frontend (no token-by-token streaming — a loading indicator covers the roughly two seconds local inference takes)
 
 ### Structured Output Schema
 
-The LLM is instructed to respond with JSON matching this schema:
+The schema is passed to Ollama as `format`, and the response comes back as JSON
+matching it:
 
 ```json
 {
   "message": "Your conversational response to the user",
-  "trades": [
-    {"ticker": "AAPL", "side": "buy", "quantity": 10}
-  ],
-  "watchlist_changes": [
-    {"ticker": "PYPL", "action": "add"}
-  ]
+  "action": "buy",
+  "ticker": "AAPL",
+  "quantity": "10"
 }
 ```
 
-- `message` (required): The conversational text shown to the user
-- `trades` (optional): Array of trades to auto-execute. Each trade goes through the same validation as manual trades (sufficient cash for buys, sufficient shares for sells)
-- `watchlist_changes` (optional): Array of watchlist modifications
+- `message`: The conversational text shown to the user
+- `action`: One of `buy`, `sell`, `watch_add`, `watch_remove`, `none` — an enum, so the model cannot invent a verb
+- `ticker`: The symbol the action applies to
+- `quantity`: Share count **as a string**, parsed by the backend; only meaningful for `buy` and `sell`
+
+This is flat and single-action by design, and it differs from what a large
+hosted model would be given. The `ollama-local` skill records four constraints
+learned from measuring small models, and this schema follows all of them:
+
+- **No `required`.** A required field makes the model invent a value it does not have. Absent keys are the signal that there is nothing to do.
+- **No arrays.** Given an array field, a small model free-runs and fills it with plausible-looking entries nobody asked for. One action per turn instead; a user wanting three trades gets three turns.
+- **No numeric fields.** `quantity` is a string because small models mangle numbers — the skill records `"five years"` coming back as `5000000000000000`. The backend parses it and rejects what does not parse.
+- **Narrow.** Few fields, asked for one turn at a time.
+
+If the single-action limit proves too tight in practice, the fix is a larger
+model, not an array field.
 
 ### Auto-Execution
 
@@ -327,6 +348,13 @@ Trades specified by the LLM execute automatically — no confirmation dialog. Th
 
 If a trade fails validation (e.g., insufficient cash), the error is included in the chat response so the LLM can inform the user.
 
+Auto-execution puts weight on validation that a confirmation dialog would
+otherwise carry, and `format` constrains the shape of the response, not its
+truth. Before any action executes: the ticker must exist in the price cache, the
+quantity must parse to a positive number, and the trade must clear the same
+checks a manual trade does. A model-invented ticker or quantity must never reach
+the trade path.
+
 ### System Prompt Guidance
 
 The LLM should be prompted as "FinAlly, an AI trading assistant" with instructions to:
@@ -335,14 +363,18 @@ The LLM should be prompted as "FinAlly, an AI trading assistant" with instructio
 - Execute trades when the user asks or agrees
 - Manage the watchlist proactively
 - Be concise and data-driven in responses
-- Always respond with valid structured JSON
+- Take at most one action per reply, leaving `action` as `none` when only answering a question
+- Never state a figure that is not in the supplied portfolio context
+
+The system prompt matters more with a 1.5b model than it would with a large
+hosted one: keep it short and concrete, since a long prompt full of conditionals
+degrades small-model output rather than improving it.
 
 ### LLM Mock Mode
 
-When `LLM_MOCK=true`, the backend returns deterministic mock responses instead of calling OpenRouter. This enables:
-- Fast, free, reproducible E2E tests
-- Development without an API key
-- CI/CD pipelines
+When `LLM_MOCK=true`, the backend returns deterministic mock responses instead of calling Ollama. This enables:
+- Fast, reproducible E2E tests, with no dependence on model output varying between runs
+- Development and CI without pulling a 1GB model or running the Ollama service
 
 ---
 

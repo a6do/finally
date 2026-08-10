@@ -15,33 +15,33 @@ Built entirely by coding agents as a capstone project for an agentic AI coding c
 
 ## Architecture
 
-Single Docker container serving everything on port 8000:
+The app runs in a single container on port 8000, alongside an Ollama service
+that hosts the local model:
 
 - **Frontend**: Next.js (static export) with TypeScript and Tailwind CSS
 - **Backend**: FastAPI (Python/uv) with SSE streaming
 - **Database**: SQLite with lazy initialization
-- **AI**: LiteLLM → OpenRouter (Cerebras inference) with structured outputs
+- **AI**: Ollama running locally (`qwen2.5:1.5b`) with structured outputs — no API key, no data leaves the machine
 - **Market data**: Built-in GBM simulator (default) or Massive API (optional)
 
 ## Quick Start
 
 ```bash
-# Clone and configure
-cp .env.example .env
-# Add your OPENROUTER_API_KEY to .env
-
-# Run with Docker
-docker build -t finally .
-docker run -v finally-data:/app/db -p 8000:8000 --env-file .env finally
+# Starts Ollama and pulls the model (about 1GB, first run only)
+./scripts/start_mac.sh
 
 # Open http://localhost:8000
 ```
+
+No API key needed. `./scripts/stop_mac.sh` stops the stack and keeps the
+downloaded model.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 |---|---|---|
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key for AI chat |
+| `OLLAMA_URL` | No | Ollama address; defaults to the compose service. Use `http://localhost:11434` when running the backend with `uv run` |
+| `OLLAMA_MODEL` | No | Local chat model; defaults to `qwen2.5:1.5b` |
 | `MASSIVE_API_KEY` | No | Massive (Polygon.io) key for real market data; omit to use simulator |
 | `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
 
