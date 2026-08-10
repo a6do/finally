@@ -1,22 +1,49 @@
 # FinAlly — AI Trading Workstation
 
-A visually stunning AI-powered trading workstation that streams live market data, simulates portfolio trading, and integrates an LLM chat assistant that can analyze positions and execute trades via natural language.
+An AI-powered trading workstation that streams live market data, simulates portfolio trading, and integrates a local LLM chat assistant able to analyze positions and execute trades from natural language.
 
 Built entirely by coding agents as a capstone project for an agentic AI coding course.
 
-## Features
+## Status
 
-- **Live price streaming** via SSE with green/red flash animations
-- **Simulated portfolio** — $10k virtual cash, market orders, instant fills
-- **Portfolio visualizations** — heatmap (treemap), P&L chart, positions table
-- **AI chat assistant** — analyzes holdings, suggests and auto-executes trades
-- **Watchlist management** — track tickers manually or via AI
-- **Dark terminal aesthetic** — Bloomberg-inspired, data-dense layout
+Under construction. Two pieces work today:
 
-## Architecture
+- **Market data** — GBM simulator and Massive API client behind one interface, with an in-memory price cache and an async stream. 73 passing tests.
+- **Ollama** — the local model that will back the AI chat, running as a service in the stack.
 
-The app runs in a single container on port 8000, alongside an Ollama service
-that hosts the local model:
+Not built yet: the FastAPI app and its endpoints, the database, the Next.js
+frontend, the chat assistant, and the Dockerfile. There is no web UI to open —
+`localhost:8000` serves nothing so far.
+
+## Try What Exists
+
+```bash
+# Live-updating terminal dashboard of simulated prices
+cd backend && uv run market_data_demo.py
+
+# Tests
+cd backend && uv run --extra dev pytest
+```
+
+```bash
+# Start Ollama; pulls qwen2.5:1.5b (about 1GB) on first run
+./scripts/start_mac.sh
+
+# Ask it something
+curl http://localhost:11434/api/chat -d '{
+  "model": "qwen2.5:1.5b",
+  "messages": [{"role": "user", "content": "Hello"}],
+  "stream": false
+}'
+```
+
+No API key needed. `./scripts/stop_mac.sh` stops the stack and keeps the
+downloaded model.
+
+## Target Architecture
+
+The app will run in a single container on port 8000, alongside the Ollama
+service:
 
 - **Frontend**: Next.js (static export) with TypeScript and Tailwind CSS
 - **Backend**: FastAPI (Python/uv) with SSE streaming
@@ -24,38 +51,31 @@ that hosts the local model:
 - **AI**: Ollama running locally (`qwen2.5:1.5b`) with structured outputs — no API key, no data leaves the machine
 - **Market data**: Built-in GBM simulator (default) or Massive API (optional)
 
-## Quick Start
-
-```bash
-# Starts Ollama and pulls the model (about 1GB, first run only)
-./scripts/start_mac.sh
-
-# Open http://localhost:8000
-```
-
-No API key needed. `./scripts/stop_mac.sh` stops the stack and keeps the
-downloaded model.
+The full specification is in [planning/PLAN.md](planning/PLAN.md).
 
 ## Environment Variables
 
-| Variable | Required | Description |
+| Variable | Read today | Description |
 |---|---|---|
-| `OLLAMA_URL` | No | Ollama address; defaults to the compose service. Use `http://localhost:11434` when running the backend with `uv run` |
-| `OLLAMA_MODEL` | No | Local chat model; defaults to `qwen2.5:1.5b` |
-| `MASSIVE_API_KEY` | No | Massive (Polygon.io) key for real market data; omit to use simulator |
-| `LLM_MOCK` | No | Set `true` for deterministic mock LLM responses (testing) |
+| `MASSIVE_API_KEY` | Yes | Massive (Polygon.io) key for real market data; omit to use simulator |
+| `OLLAMA_PORT` | Yes | Host port for the Ollama container; defaults to `11434` |
+| `OLLAMA_MODEL` | Yes | Model the start script pulls; defaults to `qwen2.5:1.5b` |
+| `OLLAMA_URL` | Not yet | Address the backend will use; the compose service by default |
+| `LLM_MOCK` | Not yet | Set `true` for deterministic mock LLM responses (testing) |
 
 ## Project Structure
 
+What exists now:
+
 ```
 finally/
-├── frontend/    # Next.js static export
-├── backend/     # FastAPI uv project
+├── backend/     # uv project; market data module and tests
 ├── planning/    # Project documentation and agent contracts
-├── test/        # Playwright E2E tests
-├── db/          # SQLite volume mount (runtime)
-└── scripts/     # Start/stop helpers
+├── scripts/     # Start/stop helpers
+└── docker-compose.yml
 ```
+
+PLAN.md adds `frontend/`, `test/`, and `db/` as the remaining work lands.
 
 ## License
 

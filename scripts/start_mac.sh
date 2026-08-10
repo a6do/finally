@@ -26,7 +26,8 @@ for _ in $(seq 1 60); do
   if curl -fs "http://localhost:$PORT/api/tags" >/dev/null 2>&1; then
     echo
     echo "Ollama is running at http://localhost:$PORT"
-    echo "Start the backend with: cd backend && uv run uvicorn app.main:app --reload"
+    # No app service yet: there is no FastAPI app to start. Point at what runs.
+    echo "Try the market data demo: cd backend && uv run market_data_demo.py"
     exit 0
   fi
   echo -n "."
