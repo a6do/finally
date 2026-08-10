@@ -1,0 +1,17 @@
+services:
+  # CPU-only, per the ollama-local skill. The port is published because the
+  # backend still runs on the host via `uv run`. Once the app ships as its own
+  # service here, it reaches Ollama at http://ollama:11434 over the compose
+  # network and this mapping can go away.
+  ollama:
+    image: ollama/ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  # Holds the pulled model. `scripts/stop_mac.sh` deliberately does not pass -v
+  # to `docker compose down`, so stopping does not throw away a gigabyte that
+  # would only have to be downloaded again.
+  ollama:
